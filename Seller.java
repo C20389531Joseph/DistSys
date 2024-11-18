@@ -1,14 +1,16 @@
 import java.io.*;
+import java.util.Scanner;
 import java.net.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.*;
 
 public class Seller {
     private static final int PORT = 12345;
-    private static final int SELL_DURATION = 60000; // 60 seconds
     private static final String[] ITEMS = {"flower", "sugar", "potato", "oil"};
     private final ConcurrentHashMap<String, Integer> inventory = new ConcurrentHashMap<>();
     private final Lock lock = new ReentrantLock();
+    private final ConcurrentHashMap<Integer, PrintWriter> buyers = new ConcurrentHashMap<>();
+    private int buyerIdCounter = 2; // First buyer starts with nodeID 2. nodeID1 is the seller
 
     public Seller() {
         // Initialize inventory with 5 units per item
@@ -32,6 +34,7 @@ public class Seller {
 
     private class ClientHandler implements Runnable {
         private final Socket clientSocket;
+        private int clientId;
 
         public ClientHandler(Socket socket) {
             this.clientSocket = socket;
@@ -42,8 +45,12 @@ public class Seller {
             try (BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
                  PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)) {
 
-                // Notify the client of available items
-                out.println("Welcome! Available items: " + inventory);
+                // Assign a unique ID to this client (buyer)
+                this.clientId = buyerIdCounter++;
+                buyers.put(clientId, out);
+
+                out.println("Welcome! Your nodeID is: nodeID" + clientId);
+                out.println("Available items: " + inventory);
 
                 String request;
                 while ((request = in.readLine()) != null) {
@@ -62,23 +69,37 @@ public class Seller {
         }
 
         private void handlePurchase(PrintWriter out, String item, int quantity) {
-            lock.lock();
-            try {
-                int stock = inventory.getOrDefault(item, 0);
-                if (stock >= quantity) {
-                    inventory.put(item, stock - quantity);
-                    out.println("Purchase successful! " + quantity + " units of " + item + " bought.");
-                    notifyAllClients(item, stock - quantity);
-                } else {
-                    out.println("Purchase failed. Insufficient stock.");
+            // Ask for approval from the seller
+            System.out.println("Buyer nodeID" + clientId + " requests to buy " + quantity + " of " + item);
+            System.out.print("Do you approve the purchase? (yes/no): ");
+            Scanner scanner = new Scanner(System.in);
+            String approval = scanner.nextLine().trim().toLowerCase();
+
+            if ("yes".equals(approval)) {
+                lock.lock();
+                try {
+                    int stock = inventory.getOrDefault(item, 0);
+                    if (stock >= quantity) {
+                        inventory.put(item, stock - quantity);
+                        out.println("Purchase successful! " + quantity + " units of " + item + " bought.");
+                        notifyAllClients(item, stock - quantity);
+                    } else {
+                        out.println("Purchase failed. Insufficient stock.");
+                    }
+                } finally {
+                    lock.unlock();
                 }
-            } finally {
-                lock.unlock();
+            } else {
+                out.println("Purchase rejected.");
             }
         }
 
         private void notifyAllClients(String item, int remainingStock) {
             System.out.println(item + " stock updated: " + remainingStock + " left.");
+            // Notify other buyers about the stock update
+            for (PrintWriter buyerOut : buyers.values()) {
+                buyerOut.println(item + " stock updated: " + remainingStock + " left.");
+            }
         }
     }
 
